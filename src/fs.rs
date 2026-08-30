@@ -51,7 +51,6 @@ pub struct AdbFs {
   open_dirs: DashMap<u64, OpenDir>,
   tmp_dir: tempfile::TempDir,
   next_fh: AtomicU64,
-  rt: tokio::runtime::Handle,
   // Inode mapping: ADB is path-based, FUSE is inode-based
   path_to_ino: DashMap<String, u64>,
   ino_to_path: DashMap<u64, String>,
@@ -59,11 +58,7 @@ pub struct AdbFs {
 }
 
 impl AdbFs {
-  pub fn new(
-    ops: Arc<DeviceOps>,
-    cache_ttl: Duration,
-    rt: tokio::runtime::Handle,
-  ) -> color_eyre::Result<Self> {
+  pub fn new(ops: Arc<DeviceOps>, cache_ttl: Duration) -> color_eyre::Result<Self> {
     let fs = Self {
       ops,
       cache: MetadataCache::new(cache_ttl),
@@ -71,7 +66,6 @@ impl AdbFs {
       open_dirs: DashMap::new(),
       tmp_dir: tempfile::TempDir::new()?,
       next_fh: AtomicU64::new(1),
-      rt,
       path_to_ino: DashMap::new(),
       ino_to_path: DashMap::new(),
       next_ino: AtomicU64::new(FUSE_ROOT_INO + 1),
@@ -124,6 +118,11 @@ impl AdbFs {
     }
   }
 
+  fn push_and_sync(&self, local: &std::path::Path, device_path: &str) -> Result<(), DeviceError> {
+    self.ops.push(local, device_path)?;
+    self.ops.sync_device()
+  }
+
   fn local_path_for(&self, device_path: &str) -> PathBuf {
     let safe_name = device_path.replace('/', "_");
     self.tmp_dir.path().join(safe_name)
@@ -143,7 +142,7 @@ impl AdbFs {
       }
       None => {}
     }
-    match self.rt.block_on(self.ops.get_metadata(path)) {
+    match self.ops.get_metadata(path) {
       Ok(meta) => {
         self.cache.insert(path.to_string(), Some(meta.clone()));
         Ok(meta)
@@ -224,7 +223,7 @@ impl Filesystem for AdbFs {
     };
     trace!(path = %path, "opendir");
 
-    let entries = match self.rt.block_on(self.ops.list_dir(&path)) {
+    let entries = match self.ops.list_dir(&path) {
       Ok(e) => e,
       Err(e) => {
         reply.error(device_err(e));
@@ -312,7 +311,7 @@ impl Filesystem for AdbFs {
 
     let local = self.local_path_for(&path);
 
-    if let Err(e) = self.rt.block_on(self.ops.pull(&path, &local)) {
+    if let Err(e) = self.ops.pull(&path, &local) {
       warn!(path = %path, err = %e, "pull failed");
       reply.error(device_err(e));
       return;
@@ -427,12 +426,7 @@ impl Filesystem for AdbFs {
       let local_path = entry.local_path.clone();
       drop(entry);
 
-      let ops = self.ops.clone();
-      if let Err(e) = self.rt.block_on(async {
-        ops.push(&local_path, &device_path).await?;
-        ops.sync_device().await?;
-        Ok::<_, DeviceError>(())
-      }) {
+      if let Err(e) = self.push_and_sync(&local_path, &device_path) {
         reply.error(device_err(e));
         return;
       }
@@ -485,13 +479,13 @@ impl Filesystem for AdbFs {
     let full_path = Self::child_path(&parent_path, name);
     debug!(path = %full_path, "mkdir");
 
-    if let Err(e) = self.rt.block_on(self.ops.mkdir(&full_path)) {
+    if let Err(e) = self.ops.mkdir(&full_path) {
       reply.error(device_err(e));
       return;
     }
     self.cache.invalidate(&full_path);
 
-    match self.rt.block_on(self.ops.get_metadata(&full_path)) {
+    match self.ops.get_metadata(&full_path) {
       Ok(meta) => {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);
@@ -513,7 +507,7 @@ impl Filesystem for AdbFs {
     let full_path = Self::child_path(&parent_path, name);
     debug!(path = %full_path, "unlink");
 
-    if let Err(e) = self.rt.block_on(self.ops.rm(&full_path)) {
+    if let Err(e) = self.ops.rm(&full_path) {
       reply.error(device_err(e));
       return;
     }
@@ -532,7 +526,7 @@ impl Filesystem for AdbFs {
     let full_path = Self::child_path(&parent_path, name);
     debug!(path = %full_path, "rmdir");
 
-    if let Err(e) = self.rt.block_on(self.ops.rmdir(&full_path)) {
+    if let Err(e) = self.ops.rmdir(&full_path) {
       reply.error(device_err(e));
       return;
     }
@@ -563,7 +557,7 @@ impl Filesystem for AdbFs {
     };
     debug!(from = %from, to = %to, "rename");
 
-    if let Err(e) = self.rt.block_on(self.ops.mv(&from, &to)) {
+    if let Err(e) = self.ops.mv(&from, &to) {
       reply.error(device_err(e));
       return;
     }
@@ -604,7 +598,7 @@ impl Filesystem for AdbFs {
     if let Some(new_size) = size {
       let local = self.local_path_for(&path);
       if !local.exists()
-        && let Err(e) = self.rt.block_on(self.ops.pull(&path, &local))
+        && let Err(e) = self.ops.pull(&path, &local)
       {
         reply.error(device_err(e));
         return;
@@ -617,11 +611,7 @@ impl Filesystem for AdbFs {
         reply.error(io_err(e));
         return;
       }
-      let ops = self.ops.clone();
-      if let Err(e) = self.rt.block_on(async {
-        ops.push(&local, &path).await?;
-        ops.sync_device().await
-      }) {
+      if let Err(e) = self.push_and_sync(&local, &path) {
         reply.error(device_err(e));
         return;
       }
@@ -638,14 +628,14 @@ impl Filesystem for AdbFs {
     let at = atime.map(resolve_time);
     let mt = mtime.map(resolve_time);
     if at.is_some() || mt.is_some() {
-      if let Err(e) = self.rt.block_on(self.ops.touch(&path, at, mt)) {
+      if let Err(e) = self.ops.touch(&path, at, mt) {
         reply.error(device_err(e));
         return;
       }
       self.cache.invalidate(&path);
     }
 
-    match self.rt.block_on(self.ops.get_metadata(&path)) {
+    match self.ops.get_metadata(&path) {
       Ok(meta) => {
         let attr = self.meta_to_attr(ino_raw, &meta);
         self.cache.insert(path, Some(meta));
@@ -716,16 +706,12 @@ impl Filesystem for AdbFs {
       }
     };
 
-    let ops = self.ops.clone();
-    if let Err(e) = self.rt.block_on(async {
-      ops.push(&local, &full_path).await?;
-      ops.sync_device().await
-    }) {
+    if let Err(e) = self.push_and_sync(&local, &full_path) {
       reply.error(device_err(e));
       return;
     }
 
-    match self.rt.block_on(self.ops.get_metadata(&full_path)) {
+    match self.ops.get_metadata(&full_path) {
       Ok(meta) => {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);
@@ -788,11 +774,7 @@ impl Filesystem for AdbFs {
       return;
     }
 
-    let ops = self.ops.clone();
-    if let Err(e) = self.rt.block_on(async {
-      ops.push(&local, &full_path).await?;
-      ops.sync_device().await
-    }) {
+    if let Err(e) = self.push_and_sync(&local, &full_path) {
       reply.error(device_err(e));
       return;
     }
@@ -800,7 +782,7 @@ impl Filesystem for AdbFs {
     self.cache.invalidate(&full_path);
     let _ = std::fs::remove_file(&local);
 
-    match self.rt.block_on(self.ops.get_metadata(&full_path)) {
+    match self.ops.get_metadata(&full_path) {
       Ok(meta) => {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);

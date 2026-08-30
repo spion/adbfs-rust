@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::path::Path;
 use thiserror::Error;
 
@@ -24,13 +23,14 @@ pub enum AdbError {
   Io(#[from] std::io::Error),
 }
 
-#[async_trait]
+/// Transport to a device. Blocking: every call runs on the FUSE worker thread
+/// that issued it, and concurrency comes from the FUSE session's thread pool.
 pub trait AdbDevice: Send + Sync {
-  async fn shell(&self, command: &str) -> Result<Vec<String>, AdbError>;
-  async fn shell_with_stderr(&self, command: &str) -> Result<ShellOutput, AdbError>;
-  async fn pull(&self, remote: &Path, local: &Path) -> Result<(), AdbError>;
-  async fn push(&self, local: &Path, remote: &Path) -> Result<(), AdbError>;
-  async fn sync_device(&self) -> Result<(), AdbError>;
+  fn shell(&self, command: &str) -> Result<Vec<String>, AdbError>;
+  fn shell_with_stderr(&self, command: &str) -> Result<ShellOutput, AdbError>;
+  fn pull(&self, remote: &Path, local: &Path) -> Result<(), AdbError>;
+  fn push(&self, local: &Path, remote: &Path) -> Result<(), AdbError>;
+  fn sync_device(&self) -> Result<(), AdbError>;
 }
 
 pub mod cli;

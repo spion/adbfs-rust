@@ -72,10 +72,10 @@ impl DeviceOps {
     self
   }
 
-  pub async fn get_metadata(&self, path: &str) -> Result<FileMeta, DeviceError> {
+  pub fn get_metadata(&self, path: &str) -> Result<FileMeta, DeviceError> {
     let escaped = shell_escape_path(path);
     let cmd = format!("ls -l -a -d '{escaped}'");
-    let output = self.adb.shell_with_stderr(&cmd).await?;
+    let output = self.adb.shell_with_stderr(&cmd)?;
 
     // On modern Android, adb shell separates stdout/stderr.
     // When ls fails, the error message is in stderr, not stdout.
@@ -101,10 +101,10 @@ impl DeviceOps {
     })
   }
 
-  pub async fn list_dir(&self, path: &str) -> Result<Vec<(String, Option<FileMeta>)>, DeviceError> {
+  pub fn list_dir(&self, path: &str) -> Result<Vec<(String, Option<FileMeta>)>, DeviceError> {
     let escaped = shell_escape_path(path);
     let cmd = format!("ls -l -a '{escaped}'");
-    let lines = self.adb.shell(&cmd).await?;
+    let lines = self.adb.shell(&cmd)?;
 
     let mut entries = Vec::new();
     for line in &lines {
@@ -132,7 +132,7 @@ impl DeviceOps {
     parse::parse_symlink_target(raw_line, num_slashes).ok_or(DeviceError::NotSupported)
   }
 
-  pub async fn touch(
+  pub fn touch(
     &self,
     path: &str,
     atime: Option<SystemTime>,
@@ -159,7 +159,7 @@ impl DeviceOps {
     }
 
     let cmd = parts.join(" && ");
-    let output = self.adb.shell_with_stderr(&cmd).await?;
+    let output = self.adb.shell_with_stderr(&cmd)?;
 
     if let Some(first) = output.stdout.first() {
       let is_date_err =
@@ -170,84 +170,75 @@ impl DeviceOps {
         }
         debug!("Touch doesn't support GNU dates, switching to legacy mode");
         self.touch_gnu_mode.store(false, Ordering::Relaxed);
-        return Box::pin(self.touch(path, atime, mtime)).await;
+        return self.touch(path, atime, mtime);
       }
     }
 
     if self.rescan {
-      self.rescan_file(path).await?;
+      self.rescan_file(path)?;
     }
     Ok(())
   }
 
-  pub async fn mkdir(&self, path: &str) -> Result<(), DeviceError> {
+  pub fn mkdir(&self, path: &str) -> Result<(), DeviceError> {
     let escaped = shell_escape_path(path);
-    self.adb.shell(&format!("mkdir '{escaped}'")).await?;
+    self.adb.shell(&format!("mkdir '{escaped}'"))?;
     Ok(())
   }
 
-  pub async fn rm(&self, path: &str) -> Result<(), DeviceError> {
+  pub fn rm(&self, path: &str) -> Result<(), DeviceError> {
     let escaped = shell_escape_path(path);
-    self.adb.shell(&format!("rm '{escaped}'")).await?;
+    self.adb.shell(&format!("rm '{escaped}'"))?;
     if self.rescan {
-      self.rescan_file(path).await?;
+      self.rescan_file(path)?;
     }
     Ok(())
   }
 
-  pub async fn rmdir(&self, path: &str) -> Result<(), DeviceError> {
+  pub fn rmdir(&self, path: &str) -> Result<(), DeviceError> {
     let escaped = shell_escape_path(path);
-    self.adb.shell(&format!("rmdir '{escaped}'")).await?;
+    self.adb.shell(&format!("rmdir '{escaped}'"))?;
     if self.rescan {
-      self.rescan_dir_removed(path).await?;
+      self.rescan_dir_removed(path)?;
     }
     Ok(())
   }
 
-  pub async fn mv(&self, from: &str, to: &str) -> Result<(), DeviceError> {
+  pub fn mv(&self, from: &str, to: &str) -> Result<(), DeviceError> {
     let from_escaped = shell_escape_path(from);
     let to_escaped = shell_escape_path(to);
     self
       .adb
-      .shell(&format!("mv '{from_escaped}' '{to_escaped}'"))
-      .await?;
+      .shell(&format!("mv '{from_escaped}' '{to_escaped}'"))?;
     if self.rescan {
-      self.rescan_file(from).await?;
-      self.rescan_file(to).await?;
+      self.rescan_file(from)?;
+      self.rescan_file(to)?;
     }
     Ok(())
   }
 
-  pub async fn pull(&self, remote: &str, local: &Path) -> Result<(), DeviceError> {
-    self
-      .adb
-      .pull(Path::new(remote), local)
-      .await
-      .map_err(Into::into)
+  pub fn pull(&self, remote: &str, local: &Path) -> Result<(), DeviceError> {
+    self.adb.pull(Path::new(remote), local).map_err(Into::into)
   }
 
-  pub async fn push(&self, local: &Path, remote: &str) -> Result<(), DeviceError> {
-    self
-      .adb
-      .push(local, Path::new(remote))
-      .await
-      .map_err(Into::into)
+  pub fn push(&self, local: &Path, remote: &str) -> Result<(), DeviceError> {
+    self.adb.push(local, Path::new(remote)).map_err(Into::into)
   }
 
-  pub async fn sync_device(&self) -> Result<(), DeviceError> {
-    self.adb.sync_device().await.map_err(Into::into)
+  pub fn sync_device(&self) -> Result<(), DeviceError> {
+    self.adb.sync_device().map_err(Into::into)
   }
 
-  async fn rescan_file(&self, path: &str) -> Result<(), DeviceError> {
+  fn rescan_file(&self, path: &str) -> Result<(), DeviceError> {
     let cmd =
       format!("am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{path}'");
-    self.adb.shell(&cmd).await?;
+    self.adb.shell(&cmd)?;
     Ok(())
   }
 
-  async fn rescan_dir_removed(&self, path: &str) -> Result<(), DeviceError> {
+  fn rescan_dir_removed(&self, path: &str) -> Result<(), DeviceError> {
     let cmd = format!("am broadcast -a android.intent.action.MEDIA_UNMOUNTED -d 'file://{path}'");
-    self.adb.shell(&cmd).await?;
+    self.adb.shell(&cmd)?;
     Ok(())
   }
 }
@@ -282,7 +273,6 @@ fn extract_name_from_perm_error(line: &str) -> Option<String> {
 mod tests {
   use super::*;
   use crate::adb::{AdbDevice, AdbError, ShellOutput};
-  use async_trait::async_trait;
   use std::sync::Mutex;
 
   struct MockAdb {
@@ -297,12 +287,11 @@ mod tests {
     }
   }
 
-  #[async_trait]
   impl AdbDevice for MockAdb {
-    async fn shell(&self, _cmd: &str) -> Result<Vec<String>, AdbError> {
+    fn shell(&self, _cmd: &str) -> Result<Vec<String>, AdbError> {
       self.responses.lock().unwrap().remove(0)
     }
-    async fn shell_with_stderr(&self, _cmd: &str) -> Result<ShellOutput, AdbError> {
+    fn shell_with_stderr(&self, _cmd: &str) -> Result<ShellOutput, AdbError> {
       let result = self.responses.lock().unwrap().remove(0);
       match result {
         Ok(lines) => Ok(ShellOutput {
@@ -313,64 +302,64 @@ mod tests {
         Err(e) => Err(e),
       }
     }
-    async fn pull(&self, _r: &Path, _l: &Path) -> Result<(), AdbError> {
+    fn pull(&self, _r: &Path, _l: &Path) -> Result<(), AdbError> {
       Ok(())
     }
-    async fn push(&self, _l: &Path, _r: &Path) -> Result<(), AdbError> {
+    fn push(&self, _l: &Path, _r: &Path) -> Result<(), AdbError> {
       Ok(())
     }
-    async fn sync_device(&self) -> Result<(), AdbError> {
+    fn sync_device(&self) -> Result<(), AdbError> {
       Ok(())
     }
   }
 
-  #[tokio::test]
-  async fn get_metadata_parses_ls_output() {
+  #[test]
+  fn get_metadata_parses_ls_output() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![
       "-rw-r--r-- root root 1234 2024-01-15 10:30 test.txt".to_string(),
     ])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let meta = ops.get_metadata("/sdcard/test.txt").await.unwrap();
+    let meta = ops.get_metadata("/sdcard/test.txt").unwrap();
     assert_eq!(meta.size, 1234);
     assert_eq!(meta.mode & libc::S_IFREG as u32, libc::S_IFREG as u32);
   }
 
-  #[tokio::test]
-  async fn get_metadata_permission_denied() {
+  #[test]
+  fn get_metadata_permission_denied() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![
       "/sbin/healthd: Permission denied".to_string(),
     ])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let result = ops.get_metadata("/sbin/healthd").await;
+    let result = ops.get_metadata("/sbin/healthd");
     assert!(matches!(result, Err(DeviceError::PermissionDenied { .. })));
   }
 
-  #[tokio::test]
-  async fn get_metadata_no_device() {
+  #[test]
+  fn get_metadata_no_device() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let result = ops.get_metadata("/any").await;
+    let result = ops.get_metadata("/any");
     assert!(matches!(result, Err(DeviceError::NoDevice)));
   }
 
-  #[tokio::test]
-  async fn get_metadata_not_found() {
+  #[test]
+  fn get_metadata_not_found() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![
       "/sdcard/nofile: No such file or directory".to_string(),
     ])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let result = ops.get_metadata("/sdcard/nofile").await;
+    let result = ops.get_metadata("/sdcard/nofile");
     assert!(matches!(result, Err(DeviceError::NotFound { .. })));
   }
 
-  #[tokio::test]
-  async fn list_dir_parses_entries() {
+  #[test]
+  fn list_dir_parses_entries() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![
       "-rw-r--r-- root root 100 2024-01-15 10:30 a.txt".to_string(),
       "drwxr-xr-x root root      2024-01-15 10:30 subdir".to_string(),
     ])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let entries = ops.list_dir("/sdcard").await.unwrap();
+    let entries = ops.list_dir("/sdcard").unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].0, "a.txt");
     assert_eq!(entries[1].0, "subdir");
@@ -378,22 +367,22 @@ mod tests {
     assert!(entries[1].1.is_some());
   }
 
-  #[tokio::test]
-  async fn list_dir_handles_permission_errors() {
+  #[test]
+  fn list_dir_handles_permission_errors() {
     let mock = Arc::new(MockAdb::new(vec![Ok(vec![
       "-rw-r--r-- root root 100 2024-01-15 10:30 ok.txt".to_string(),
       "lstat '//efs' failed: Permission denied".to_string(),
     ])]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
-    let entries = ops.list_dir("/").await.unwrap();
+    let entries = ops.list_dir("/").unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].0, "ok.txt");
     assert_eq!(entries[1].0, "efs");
     assert!(entries[1].1.is_none());
   }
 
-  #[tokio::test]
-  async fn touch_gnu_fallback() {
+  #[test]
+  fn touch_gnu_fallback() {
     let mock = Arc::new(MockAdb::new(vec![
       // First attempt: GNU format fails
       Ok(vec!["touch: bad '@1700000000.000000000'".to_string()]),
@@ -402,12 +391,12 @@ mod tests {
     ]));
     let ops = DeviceOps::new(mock, ResolvedCompat::legacy());
     let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000);
-    ops.touch("/sdcard/test", None, Some(time)).await.unwrap();
+    ops.touch("/sdcard/test", None, Some(time)).unwrap();
     assert!(!ops.touch_gnu_mode.load(Ordering::Relaxed));
   }
 
-  #[tokio::test]
-  async fn resolve_symlink_works() {
+  #[test]
+  fn resolve_symlink_works() {
     let ops = DeviceOps::new(Arc::new(MockAdb::new(vec![])), ResolvedCompat::legacy());
     let raw = "lrwxrwxrwx root root 2024-01-01 12:00 link -> /system/lib/libc.so";
     let target = ops.resolve_symlink("/vendor/lib/link", raw).unwrap();

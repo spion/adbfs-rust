@@ -42,16 +42,11 @@ fn main() -> Result<()> {
 
   let cli = Cli::parse();
 
-  let rt = tokio::runtime::Runtime::new()?;
   let adb = Arc::new(adb::cli::AdbCli::new(None));
   let device_ops =
     Arc::new(ops::DeviceOps::new(adb, ops::ResolvedCompat::legacy()).with_rescan(cli.rescan));
 
-  let adbfs = fs::AdbFs::new(
-    device_ops,
-    Duration::from_secs(cli.cache_ttl),
-    rt.handle().clone(),
-  )?;
+  let adbfs = fs::AdbFs::new(device_ops, Duration::from_secs(cli.cache_ttl))?;
 
   fs::mount(adbfs, &cli.mountpoint, cli.options)?;
   Ok(())

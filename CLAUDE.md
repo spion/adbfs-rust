@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-adbfs-rootless is a FUSE filesystem that mounts Android devices over ADB without requiring root. The Rust port (branch `rust`) uses fuser (FUSE3); the legacy C++ version uses libfuse (FUSE2).
+adbfs-rootless is a FUSE filesystem that mounts Android devices over ADB without requiring root. The main branch is a Rust port using fuser (FUSE3); the legacy C++ version uses libfuse (FUSE2) and is part of the commit history
 
 ## Build & Test Commands
 
@@ -38,7 +38,7 @@ FUSE interface (fs.rs)
 Device operations (ops.rs)
   ↓ high-level ops: list_dir, get_metadata, pull, push, mkdir, rm, mv, touch
 ADB transport (adb/)
-  ↓ shell commands via tokio::process::Command
+  ↓ shell commands via std::process::Command
 Parsing & escaping (parse.rs, escape.rs)
 ```
 
@@ -50,21 +50,19 @@ Parsing & escaping (parse.rs, escape.rs)
 
 - **File I/O via pull/push**: `open()` pulls the device file to a local tempdir. Writes go to the local copy. `flush()` pushes it back and syncs.
 
-- **Async bridge**: All ADB operations are async (tokio). FUSE callbacks are sync → bridged via `rt.block_on()`.
-
-- **Concurrency**: ADB daemon on-device is single-threaded. A semaphore in `adb/cli.rs` limits concurrent adb commands to `min(16, available_parallelism)`.
+- **Blocking transport**: `AdbDevice` is a plain blocking trait. Each ADB command runs on the FUSE worker thread that issued it, and concurrency comes from the FUSE session's thread pool (`config.n_threads`, set to `available_parallelism()` in `fs.rs`). There is no async runtime: every call site was `block_on` on a worker thread, so tokio bought nothing over `std::process::Command`.
 
 ### Module roles
 
-| Module | Role |
-|--------|------|
-| `fs.rs` | fuser::Filesystem impl — all FUSE callbacks, inode/handle maps, metadata cache |
-| `ops.rs` | DeviceOps — high-level device operations, symlink resolution, media rescan |
-| `cache.rs` | MetadataCache — DashMap with TTL expiration, prefix invalidation |
-| `adb/mod.rs` | AdbDevice trait definition |
-| `adb/cli.rs` | AdbCli — concrete impl executing `adb` binary |
-| `parse.rs` | Parses Android `ls -l` output (multiple formats), mode strings, symlinks |
-| `escape.rs` | Shell escaping for adb shell commands and paths |
+| Module       | Role                                                                           |
+| ------------ | ------------------------------------------------------------------------------ |
+| `fs.rs`      | fuser::Filesystem impl — all FUSE callbacks, inode/handle maps, metadata cache |
+| `ops.rs`     | DeviceOps — high-level device operations, symlink resolution, media rescan     |
+| `cache.rs`   | MetadataCache — DashMap with TTL expiration, prefix invalidation               |
+| `adb/mod.rs` | AdbDevice trait definition                                                     |
+| `adb/cli.rs` | AdbCli — concrete impl executing `adb` binary                                  |
+| `parse.rs`   | Parses Android `ls -l` output (multiple formats), mode strings, symlinks       |
+| `escape.rs`  | Shell escaping for adb shell commands and paths                                |
 
 ## Testing
 
