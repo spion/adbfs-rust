@@ -45,8 +45,17 @@ impl MetadataCache {
     self.entries.remove(path);
   }
 
+  /// Drops `prefix` itself and everything below it. The boundary is a path
+  /// component, so invalidating `/sdcard` leaves `/sdcardfoo` alone.
   pub fn invalidate_prefix(&self, prefix: &str) {
-    self.entries.retain(|key, _| !key.starts_with(prefix));
+    let dir = if prefix.ends_with('/') {
+      prefix.to_owned()
+    } else {
+      format!("{prefix}/")
+    };
+    self
+      .entries
+      .retain(|key, _| key != prefix && !key.starts_with(&dir));
   }
 }
 
@@ -119,14 +128,42 @@ mod tests {
   #[test]
   fn invalidate_prefix_removes_children() {
     let cache = MetadataCache::new(Duration::from_secs(30));
+    cache.insert("/sdcard".to_owned(), Some(dummy_meta()));
     cache.insert("/sdcard/a".to_owned(), Some(dummy_meta()));
     cache.insert("/sdcard/b".to_owned(), Some(dummy_meta()));
     cache.insert("/other".to_owned(), Some(dummy_meta()));
 
     cache.invalidate_prefix("/sdcard");
 
+    assert!(cache.get("/sdcard").is_none());
     assert!(cache.get("/sdcard/a").is_none());
     assert!(cache.get("/sdcard/b").is_none());
     assert!(cache.get("/other").is_some());
+  }
+
+  #[test]
+  fn invalidate_prefix_keeps_siblings_sharing_the_prefix() {
+    let cache = MetadataCache::new(Duration::from_secs(30));
+    cache.insert("/sdcard/a".to_owned(), Some(dummy_meta()));
+    cache.insert("/sdcardfoo".to_owned(), Some(dummy_meta()));
+    cache.insert("/sdcard2/b".to_owned(), Some(dummy_meta()));
+
+    cache.invalidate_prefix("/sdcard");
+
+    assert!(cache.get("/sdcard/a").is_none());
+    assert!(cache.get("/sdcardfoo").is_some());
+    assert!(cache.get("/sdcard2/b").is_some());
+  }
+
+  #[test]
+  fn invalidate_prefix_root_clears_everything() {
+    let cache = MetadataCache::new(Duration::from_secs(30));
+    cache.insert("/".to_owned(), Some(dummy_meta()));
+    cache.insert("/sdcard/a".to_owned(), Some(dummy_meta()));
+
+    cache.invalidate_prefix("/");
+
+    assert!(cache.get("/").is_none());
+    assert!(cache.get("/sdcard/a").is_none());
   }
 }

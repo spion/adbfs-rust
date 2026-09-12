@@ -34,3 +34,5 @@ pub trait AdbDevice: Send + Sync {
 }
 
 pub mod cli;
+#[cfg(test)]
+pub mod mock;

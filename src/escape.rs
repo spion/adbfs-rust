@@ -5,12 +5,11 @@
 
 /// Escapes a path for safe embedding inside single-quoted shell strings.
 ///
-/// `'` is replaced with `'\''` (end quote, escaped quote, reopen quote) and
-/// `"` is replaced with `\"`.
+/// `'` is replaced with `'\''` (end quote, escaped quote, reopen quote), which
+/// is the only escape a single-quoted string needs: every other byte, `"` and
+/// `\` included, is literal inside `'...'`.
 pub fn shell_escape_path(path: &str) -> String {
-  // Order matters: the C++ code processes `'` first, then `"`.
-  let s = path.replace('\'', "'\\''");
-  s.replace('"', "\\\"")
+  path.replace('\'', "'\\''")
 }
 
 /// Escapes a command string for safe use with a local shell.
@@ -91,13 +90,20 @@ mod tests {
   }
 
   #[test]
-  fn escape_path_double_quote() {
-    assert_eq!(shell_escape_path(r#"say "hello""#), r#"say \"hello\""#);
+  fn escape_path_double_quote_is_literal() {
+    // Inside `'...'` a double quote needs no escape, and a backslash before it
+    // would be passed to the device as part of the filename.
+    assert_eq!(shell_escape_path(r#"say "hello""#), r#"say "hello""#);
   }
 
   #[test]
   fn escape_path_both_quotes() {
-    assert_eq!(shell_escape_path(r#"it's "fine""#), r#"it'\''s \"fine\""#);
+    assert_eq!(shell_escape_path(r#"it's "fine""#), r#"it'\''s "fine""#);
+  }
+
+  #[test]
+  fn escape_path_backslash_is_literal() {
+    assert_eq!(shell_escape_path(r"a\b"), r"a\b");
   }
 
   #[test]
@@ -256,6 +262,34 @@ mod tests {
   }
 
   // ---- proptest ----
+
+  /// Models POSIX word expansion of a fully quoted word: `'` toggles literal
+  /// mode, and a backslash escapes the next character only outside `'...'`.
+  /// Returns `None` for an unbalanced quote.
+  fn shell_unquote(s: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+      match c {
+        '\'' => quoted = !quoted,
+        '\\' if !quoted => out.push(chars.next()?),
+        _ => out.push(c),
+      }
+    }
+    (!quoted).then_some(out)
+  }
+
+  proptest! {
+      /// Every call site interpolates the result into `'{escaped}'`, so the
+      /// shell must hand the device back the original path byte for byte.
+      #[test]
+      fn escape_path_round_trips_through_single_quotes(s in ".*") {
+          let quoted = format!("'{}'", shell_escape_path(&s));
+          let unquoted = shell_unquote(&quoted);
+          prop_assert_eq!(unquoted.as_deref(), Some(s.as_str()));
+      }
+  }
 
   proptest! {
       /// Every single quote in the escaped output must be part of the
