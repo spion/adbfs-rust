@@ -1,8 +1,12 @@
-This variant of adbfs works even WITHOUT having root access (busybox) on your phone!
+## adbfs-rust (rootless)
+
+This is an AI-assisted (but human reviewed) port of adbfs-rootless to Rust.
+
+It continues to work without root accesss or busybox.
 
 # Instructions:
 
-## Ubuntu (Rust)
+## Ubuntu
 
 You will need the Rust toolchain, `libfuse3-dev`, and `adb`.
 
@@ -59,28 +63,28 @@ Have fun!
 
 ## Mount options
 
-| Flag | Meaning |
-| ---- | ------- |
-| `-f` | Stay in the foreground |
-| `-d` | Debug logging, implies `-f` (same as `-o debug`) |
-| `-s` | Serve requests on a single thread |
-| `--rescan` | Trigger an Android media rescan after write operations |
-| `--cache-ttl <secs>` | Lifetime of adbfs' own metadata cache (default 30) |
+| Flag                 | Meaning                                                |
+| -------------------- | ------------------------------------------------------ |
+| `-f`                 | Stay in the foreground                                 |
+| `-d`                 | Debug logging, implies `-f` (same as `-o debug`)       |
+| `-s`                 | Serve requests on a single thread                      |
+| `--rescan`           | Trigger an Android media rescan after write operations |
+| `--cache-ttl <secs>` | Lifetime of adbfs' own metadata cache (default 30)     |
 
 `-o` takes the usual comma-separated list. adbfs handles the options below
 itself, and passes everything else (`allow_other`, `ro`, `max_read=`, ...) to
 the kernel:
 
-| Option | Default | Meaning |
-| ------ | ------- | ------- |
-| `uid=N`, `gid=N` | device values | Report every file as owned by N |
-| `umask=M` | device values | Report permissions as `0777 & ~M` |
-| `entry_timeout=S` | 1 | How long the kernel may cache a name lookup |
-| `attr_timeout=S` | 1 | How long the kernel may cache file attributes |
-| `negative_timeout=S` | 0 | How long the kernel may cache "no such file" |
-| `direct_io` | off | Bypass the kernel page cache for file data |
-| `kernel_cache` | off | Keep cached file data across opens |
-| `debug` | off | Same as `-d` |
+| Option               | Default       | Meaning                                       |
+| -------------------- | ------------- | --------------------------------------------- |
+| `uid=N`, `gid=N`     | device values | Report every file as owned by N               |
+| `umask=M`            | device values | Report permissions as `0777 & ~M`             |
+| `entry_timeout=S`    | 1             | How long the kernel may cache a name lookup   |
+| `attr_timeout=S`     | 1             | How long the kernel may cache file attributes |
+| `negative_timeout=S` | 0             | How long the kernel may cache "no such file"  |
+| `direct_io`          | off           | Bypass the kernel page cache for file data    |
+| `kernel_cache`       | off           | Keep cached file data across opens            |
+| `debug`              | off           | Same as `-d`                                  |
 
 These are the options libfuse used to implement for every filesystem. adbfs
 uses a low-level FUSE binding, so it implements them itself.
