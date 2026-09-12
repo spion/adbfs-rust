@@ -2,7 +2,10 @@
 
 This is an AI-assisted (but human reviewed) port of adbfs-rootless to Rust.
 
-It continues to work without root accesss or busybox.
+It derives from [adbfs-rootless](https://github.com/spion/adbfs-rootless), itself a
+fork of Calvin Tee's original adbfs. BSD-3-Clause, see `license`.
+
+It continues to work without root access or busybox.
 
 # Instructions:
 
@@ -28,8 +31,8 @@ Check access to phone through adb
 
 Clone the repository:
 
-    git clone git@github.com:spion/adbfs-rootless.git
-    cd adbfs-rootless
+    git clone git@github.com:spion/adbfs-rust.git
+    cd adbfs-rust
 
 Build:
 

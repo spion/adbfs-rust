@@ -2,6 +2,10 @@
 name = "adbfs"
 version = "0.1.0"
 edition = "2024"
+description = "FUSE filesystem that mounts Android devices over ADB, without root"
+repository = "https://github.com/spion/adbfs-rust"
+license = "BSD-3-Clause"
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4.5.59", features = ["derive"] }
