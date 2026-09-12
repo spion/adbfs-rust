@@ -49,7 +49,45 @@ To set cache TTL (default 30 seconds):
 
     ./target/release/adbfs --cache-ttl 60 ~/droid
 
+adbfs forks into the background once the mount is up, so the command returns
+immediately. Pass `-f` to keep it in the foreground, and `-d` to also turn on
+debug logging (`-d` implies `-f`):
+
+    ./target/release/adbfs -d ~/droid
+
 Have fun!
+
+## Mount options
+
+| Flag | Meaning |
+| ---- | ------- |
+| `-f` | Stay in the foreground |
+| `-d` | Debug logging, implies `-f` (same as `-o debug`) |
+| `-s` | Serve requests on a single thread |
+| `--rescan` | Trigger an Android media rescan after write operations |
+| `--cache-ttl <secs>` | Lifetime of adbfs' own metadata cache (default 30) |
+
+`-o` takes the usual comma-separated list. adbfs handles the options below
+itself, and passes everything else (`allow_other`, `ro`, `max_read=`, ...) to
+the kernel:
+
+| Option | Default | Meaning |
+| ------ | ------- | ------- |
+| `uid=N`, `gid=N` | device values | Report every file as owned by N |
+| `umask=M` | device values | Report permissions as `0777 & ~M` |
+| `entry_timeout=S` | 1 | How long the kernel may cache a name lookup |
+| `attr_timeout=S` | 1 | How long the kernel may cache file attributes |
+| `negative_timeout=S` | 0 | How long the kernel may cache "no such file" |
+| `direct_io` | off | Bypass the kernel page cache for file data |
+| `kernel_cache` | off | Keep cached file data across opens |
+| `debug` | off | Same as `-d` |
+
+These are the options libfuse used to implement for every filesystem. adbfs
+uses a low-level FUSE binding, so it implements them itself.
+
+The timeouts are seconds and accept fractions. They only bound how stale the
+kernel's view may be; `--cache-ttl` separately bounds how often adbfs re-reads
+the device.
 
 ## Troubleshooting
 

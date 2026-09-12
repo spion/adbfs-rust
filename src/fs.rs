@@ -9,16 +9,16 @@ use dashmap::DashMap;
 use fuser::{
   AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
   INodeNo, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-  ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, SessionACL, TimeOrNow,
-  WriteFlags,
+  ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, Session, SessionACL,
+  TimeOrNow, WriteFlags,
 };
 use tracing::{debug, trace, warn};
 
 use crate::cache::MetadataCache;
+use crate::mount_opts::FsOptions;
 use crate::ops::{DeviceError, DeviceOps};
 use crate::parse::FileMeta;
 
-const TTL: Duration = Duration::from_secs(1);
 const FUSE_ROOT_INO: u64 = 1;
 
 fn err(code: i32) -> Errno {
@@ -50,6 +50,7 @@ pub struct AdbFs {
   open_files: DashMap<u64, OpenFile>,
   open_dirs: DashMap<u64, OpenDir>,
   tmp_dir: tempfile::TempDir,
+  opts: FsOptions,
   next_fh: AtomicU64,
   // Inode mapping: ADB is path-based, FUSE is inode-based
   path_to_ino: DashMap<String, u64>,
@@ -58,13 +59,18 @@ pub struct AdbFs {
 }
 
 impl AdbFs {
-  pub fn new(ops: Arc<DeviceOps>, cache_ttl: Duration) -> color_eyre::Result<Self> {
+  pub fn new(
+    ops: Arc<DeviceOps>,
+    cache_ttl: Duration,
+    opts: FsOptions,
+  ) -> color_eyre::Result<Self> {
     let fs = Self {
       ops,
       cache: MetadataCache::new(cache_ttl),
       open_files: DashMap::new(),
       open_dirs: DashMap::new(),
       tmp_dir: tempfile::TempDir::new()?,
+      opts,
       next_fh: AtomicU64::new(1),
       path_to_ino: DashMap::new(),
       ino_to_path: DashMap::new(),
@@ -99,6 +105,9 @@ impl AdbFs {
   }
 
   fn meta_to_attr(&self, ino: u64, meta: &FileMeta) -> FileAttr {
+    let mut uid = meta.uid;
+    let mut gid = meta.gid;
+    let mode = self.opts.apply_ownership(meta.mode, &mut uid, &mut gid);
     FileAttr {
       ino: INodeNo(ino),
       size: meta.size,
@@ -107,15 +116,23 @@ impl AdbFs {
       mtime: meta.mtime,
       ctime: meta.mtime,
       crtime: UNIX_EPOCH,
-      kind: mode_to_filetype(meta.mode),
-      perm: (meta.mode & 0o7777) as u16,
+      kind: mode_to_filetype(mode),
+      perm: (mode & 0o7777) as u16,
       nlink: meta.nlink,
-      uid: meta.uid,
-      gid: meta.gid,
+      uid,
+      gid,
       rdev: meta.rdev as u32,
       blksize: 512,
       flags: 0,
     }
+  }
+
+  /// Cache hints for an open file handle, from `-o direct_io` / `-o kernel_cache`.
+  fn file_open_flags(&self) -> FopenFlags {
+    let mut flags = FopenFlags::empty();
+    flags.set(FopenFlags::FOPEN_DIRECT_IO, self.opts.direct_io);
+    flags.set(FopenFlags::FOPEN_KEEP_CACHE, self.opts.kernel_cache);
+    flags
   }
 
   fn push_and_sync(&self, local: &std::path::Path, device_path: &str) -> Result<(), DeviceError> {
@@ -156,6 +173,26 @@ impl AdbFs {
   }
 }
 
+/// FUSE reports a cacheable miss as an entry reply with inode zero. The kernel
+/// reads nothing else from it, so every other field is left empty.
+const NEGATIVE_ENTRY: FileAttr = FileAttr {
+  ino: INodeNo(0),
+  size: 0,
+  blocks: 0,
+  atime: UNIX_EPOCH,
+  mtime: UNIX_EPOCH,
+  ctime: UNIX_EPOCH,
+  crtime: UNIX_EPOCH,
+  kind: FileType::RegularFile,
+  perm: 0,
+  nlink: 0,
+  uid: 0,
+  gid: 0,
+  rdev: 0,
+  blksize: 0,
+  flags: 0,
+};
+
 fn mode_to_filetype(mode: u32) -> FileType {
   let ft = mode & libc::S_IFMT;
   match ft {
@@ -184,7 +221,7 @@ impl Filesystem for AdbFs {
     match self.fetch_meta(&path) {
       Ok(meta) => {
         let attr = self.meta_to_attr(ino_raw, &meta);
-        reply.attr(&TTL, &attr);
+        reply.attr(&self.opts.attr_timeout, &attr);
       }
       Err(e) => reply.error(device_err(e)),
     }
@@ -206,7 +243,10 @@ impl Filesystem for AdbFs {
       Ok(meta) => {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);
-        reply.entry(&TTL, &attr, Generation(0));
+        reply.entry(&self.opts.entry_timeout, &attr, Generation(0));
+      }
+      Err(DeviceError::NotFound { .. }) if !self.opts.negative_timeout.is_zero() => {
+        reply.entry(&self.opts.negative_timeout, &NEGATIVE_ENTRY, Generation(0));
       }
       Err(e) => reply.error(device_err(e)),
     }
@@ -339,7 +379,7 @@ impl Filesystem for AdbFs {
         dirty: false,
       },
     );
-    reply.opened(FileHandle(fh), FopenFlags::empty());
+    reply.opened(FileHandle(fh), self.file_open_flags());
   }
 
   fn read(
@@ -490,7 +530,7 @@ impl Filesystem for AdbFs {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);
         self.cache.insert(full_path, Some(meta));
-        reply.entry(&TTL, &attr, Generation(0));
+        reply.entry(&self.opts.entry_timeout, &attr, Generation(0));
       }
       Err(e) => reply.error(device_err(e)),
     }
@@ -639,7 +679,7 @@ impl Filesystem for AdbFs {
       Ok(meta) => {
         let attr = self.meta_to_attr(ino_raw, &meta);
         self.cache.insert(path, Some(meta));
-        reply.attr(&TTL, &attr);
+        reply.attr(&self.opts.attr_timeout, &attr);
       }
       Err(e) => reply.error(device_err(e)),
     }
@@ -728,11 +768,11 @@ impl Filesystem for AdbFs {
           },
         );
         reply.created(
-          &TTL,
+          &self.opts.entry_timeout,
           &attr,
           Generation(0),
           FileHandle(fh),
-          FopenFlags::empty(),
+          self.file_open_flags(),
         );
       }
       Err(e) => reply.error(device_err(e)),
@@ -787,17 +827,25 @@ impl Filesystem for AdbFs {
         let ino = self.get_or_assign_ino(&full_path);
         let attr = self.meta_to_attr(ino, &meta);
         self.cache.insert(full_path, Some(meta));
-        reply.entry(&TTL, &attr, Generation(0));
+        reply.entry(&self.opts.entry_timeout, &attr, Generation(0));
       }
       Err(e) => reply.error(device_err(e)),
     }
   }
 }
 
+/// Mount `adbfs` and serve requests until the filesystem is unmounted.
+///
+/// `on_mounted` runs after the mount is live and the kernel handshake is done,
+/// but before any worker thread exists. That is the only safe point to fork
+/// into the background: earlier and the parent would report success before the
+/// mountpoint works, later and `fork` would drop the worker threads.
 pub fn mount(
   adbfs: AdbFs,
   mountpoint: &std::path::Path,
   options: Vec<String>,
+  single_threaded: bool,
+  on_mounted: impl FnOnce() -> color_eyre::Result<()>,
 ) -> color_eyre::Result<()> {
   let mut mount_options = vec![
     MountOption::AutoUnmount,
@@ -807,15 +855,22 @@ pub fn mount(
     mount_options.push(MountOption::CUSTOM(opt));
   }
 
-  let n_threads = std::thread::available_parallelism()
-    .map(|n| n.get())
-    .unwrap_or(4);
+  let n_threads = if single_threaded {
+    1
+  } else {
+    std::thread::available_parallelism()
+      .map(|n| n.get())
+      .unwrap_or(4)
+  };
 
   let mut config = Config::default();
   config.mount_options = mount_options;
   config.acl = SessionACL::RootAndOwner;
   config.n_threads = Some(n_threads);
   config.clone_fd = true;
-  fuser::mount2(adbfs, mountpoint, &config)?;
+
+  let session = Session::new(adbfs, mountpoint, &config)?;
+  on_mounted()?;
+  session.spawn()?.join()?;
   Ok(())
 }
